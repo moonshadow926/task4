@@ -2,6 +2,7 @@
 
 检测：OpenCV YuNet；身份：OpenCV SFace 提取 128 维特征向量，与现场录入的特征做余弦比对（不训练网络）。
 口罩：在对齐后的 112x112 人脸上，比较“眉心皮肤”和“口鼻下巴区域”的颜色，口鼻处皮肤占比低即判为戴口罩。
+录入只接受未戴口罩的完整人脸；拍照时戴不戴口罩都识别身份，并标注是否戴口罩（戴口罩用更严格的阈值）。
 
 串口协议（STM32 -> PC，每行以 \r\n 结尾）：
     #CAP      拍一张并识别
@@ -36,7 +37,8 @@ DB_PATH = os.path.join(HERE, "faces_db.json")
 CAP_DIR = os.path.join(HERE, "captures")
 LOG_PATH = os.path.join(CAP_DIR, "results.csv")
 
-COSINE_THRESH = 0.363     # SFace 官方推荐阈值，>= 判为同一人
+COSINE_THRESH = 0.363     # SFace 官方推荐阈值，>= 判为同一人（未戴口罩）
+MASK_COSINE_THRESH = 0.45 # 戴口罩时的身份阈值（更严格）；实测本人戴口罩相似度约 0.55~0.84
 MASK_SKIN_RATIO = 0.35    # 口鼻区域“像皮肤”的像素占比低于此值 -> 戴口罩（现场可调）
 ENROLL_SHOTS = 5
 
@@ -81,14 +83,14 @@ class FaceSystem:
         skin_ratio = float(np.mean((d_ab < 10) & (d_l < 45)))
         return skin_ratio < MASK_SKIN_RATIO, skin_ratio
 
-    def identify(self, feat):
+    def identify(self, feat, thresh=COSINE_THRESH):
         best_name, best_sim = "Unknown", 0.0
         for name, feats in self.db.items():
             for ref in feats:
                 sim = self.recognizer.match(feat.reshape(1, -1), ref.reshape(1, -1), cv2.FaceRecognizerSF_FR_COSINE)
                 if sim > best_sim:
                     best_name, best_sim = name, sim
-        if best_sim < COSINE_THRESH:
+        if best_sim < thresh:
             best_name = "Unknown"
         return best_name, best_sim
 
@@ -98,10 +100,8 @@ class FaceSystem:
         for face in self.detect(frame):
             aligned, feat = self.feature(frame, face)
             masked, ratio = self.mask_check(aligned)
-            if masked:
-                name, sim = "-", 0.0          # 学长要求：戴口罩时不要求身份识别
-            else:
-                name, sim = self.identify(feat)
+            # 戴口罩也识别身份：人脸库是完整人脸，戴口罩后不同人之间更相似，用更严格的阈值防误认
+            name, sim = self.identify(feat, MASK_COSINE_THRESH if masked else COSINE_THRESH)
             results.append(dict(box=face[:4].astype(int), name=name, sim=sim, masked=masked, ratio=ratio))
         return results
 
@@ -188,9 +188,9 @@ class Enroller:
 def draw(frame, results):
     for r in results:
         x, y, w, h = r["box"]
-        color = (0, 165, 255) if r["masked"] else ((0, 200, 0) if r["name"] != "Unknown" else (0, 0, 255))
+        color = (0, 200, 0) if r["name"] != "Unknown" else (0, 0, 255)   # 框颜色：绿=认出，红=陌生人
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        text = "MASK" if r["masked"] else f"{r['name']} {r['sim']:.2f} NO-MASK"
+        text = f"{r['name']} {r['sim']:.2f} {'MASK' if r['masked'] else 'NO-MASK'}"
         cv2.putText(frame, text, (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
@@ -212,11 +212,9 @@ def capture_once(fs, cam, ser):
         reply = "R:NOFACE"
     else:
         for i, r in enumerate(results, 1):
-            if r["masked"]:
-                print(f"[结果] 人脸{i}：佩戴口罩（口鼻肤色占比 {r['ratio']:.2f}），身份不识别")
-            else:
-                who = "陌生人" if r["name"] == "Unknown" else r["name"]
-                print(f"[结果] 人脸{i}：身份={who}，相似度={r['sim']:.3f}，未佩戴口罩（口鼻肤色占比 {r['ratio']:.2f}）")
+            who = "陌生人" if r["name"] == "Unknown" else r["name"]
+            mask = "佩戴口罩" if r["masked"] else "未佩戴口罩"
+            print(f"[结果] 人脸{i}：身份={who}，相似度={r['sim']:.3f}，{mask}（口鼻肤色占比 {r['ratio']:.2f}）")
         r = results[0]
         reply = f"R:{r['name']},{'MASK' if r['masked'] else 'NOMASK'},{r['sim']:.2f}"
 
