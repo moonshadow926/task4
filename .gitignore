@@ -1,0 +1,17 @@
+# 编译产物
+vision4_f407/build/
+
+# Python
+__pycache__/
+
+# 运行时数据：拍摄的照片、识别记录、人脸特征库（含真人人脸数据，不入库）
+pc/captures/
+pc/faces_db.json
+
+# 模型文件较大（约 38MB），从 opencv_zoo 下载：
+#   https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
+#   https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface
+pc/models/
+
+# Word 打开时的临时锁文件
+~$*
